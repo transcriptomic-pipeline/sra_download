@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SRA Download Module - Main Script
+# SRA Download Module - Main Script (single entry)
 #
 
 set -euo pipefail
@@ -21,8 +21,6 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 DEFAULT_INSTALL_DIR="${HOME}/softwares"
 DEFAULT_OUTPUT_DIR="sra_fastq_download"
-CONFIG_DIR="${SCRIPT_DIR}/config"
-CONFIG_FILE="${CONFIG_DIR}/install_paths.conf"
 
 INPUT_SPEC=""
 OUTPUT_DIR=""
@@ -55,7 +53,7 @@ EOF
     exit 0
 }
 
-# ----------------- CLI args -----------------
+# ------------- CLI args -------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)
@@ -99,7 +97,7 @@ if [[ -z "$INPUT_SPEC" ]]; then
     usage
 fi
 
-# ----------------- Helpers ------------------
+# ------------- Helpers --------------
 auto_detect_cpu() {
     if command -v nproc &>/dev/null; then
         nproc
@@ -166,17 +164,8 @@ prompt_output_directory() {
     esac
 }
 
-ensure_install_dir_and_tools() {
-    # Use config as default if present and user did not pass --install-dir
-    if [[ -z "$INSTALL_BASE_DIR" && -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE"
-        if [[ -n "${SRA_INSTALL_DIR:-}" ]]; then
-            INSTALL_BASE_DIR="${SRA_INSTALL_DIR}"
-        fi
-    fi
-
-    # Prompt if still unset
+ensure_install_and_tools() {
+    # Ask for install dir if user didn't provide
     if [[ -z "$INSTALL_BASE_DIR" ]]; then
         prompt_install_directory
     fi
@@ -190,7 +179,6 @@ ensure_install_dir_and_tools() {
         log_info "Running installer..."
         bash "${SCRIPT_DIR}/install.sh" --install-dir "$INSTALL_BASE_DIR"
         echo ""
-
         BIN_DIR="${INSTALL_BASE_DIR}/bin"
         PREFETCH_BIN="${BIN_DIR}/prefetch"
         FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
@@ -201,15 +189,6 @@ ensure_install_dir_and_tools() {
     if [[ ! -x "$PREFETCH_BIN" || ! -x "$FASTERQ_BIN" ]]; then
         log_error "SRA Toolkit binaries not found after installation at: ${BIN_DIR}"
         exit 1
-    fi
-
-    # Optionally load default threads from config
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE"
-        if [[ -z "${THREADS}" && -n "${SRA_DEFAULT_THREADS:-}" ]]; then
-            THREADS="${SRA_DEFAULT_THREADS}"
-        fi
     fi
 
     export PREFETCH_BIN FASTERQ_BIN
@@ -264,7 +243,6 @@ prepare_output_dir() {
     if [[ -z "$OUTPUT_DIR" ]]; then
         prompt_output_directory
     fi
-
     mkdir -p "$OUTPUT_DIR"
     cd "$OUTPUT_DIR"
     log_info "Using output directory: $(pwd)"
@@ -302,7 +280,6 @@ export PREFETCH_BIN FASTERQ_BIN
 run_parallel_downloads() {
     local -n arr_ref="$1"
     local jobs="$2"
-
     log_info "Starting parallel downloads: ${#arr_ref[@]} accessions, ${jobs} jobs, ${THREADS} threads each."
     printf "%s\n" "${arr_ref[@]}" | xargs -r -n1 -P "$jobs" bash -c 'download_one "$@"' _
 }
@@ -310,9 +287,8 @@ run_parallel_downloads() {
 cleanup_cache() {
     if [[ "$KEEP_SRA_CACHE" == "yes" ]]; then
         log_info "Keeping SRA cache as requested."
-        return 0
+        return
     fi
-
     for d in "$HOME/ncbi" "$HOME/.ncbi"; do
         if [[ -d "$d" ]]; then
             log_info "Removing SRA cache directory: $d"
@@ -327,10 +303,10 @@ main() {
     echo "========================================"
     echo ""
 
-    ensure_install_dir_and_tools        # prompts + installs if needed
+    ensure_install_and_tools        # PROMPTS + INSTALLS if needed, then returns
     detect_threads_and_parallel
     parse_input_ids "$INPUT_SPEC"
-    prepare_output_dir                  # prompts for FASTQ output dir if not set
+    prepare_output_dir
 
     log_info "Installation directory: ${INSTALL_BASE_DIR}"
     log_info "CPU cores detected:    $(auto_detect_cpu)"
