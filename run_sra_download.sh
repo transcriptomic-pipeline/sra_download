@@ -2,12 +2,6 @@
 #
 # SRA Download Module - Main Script
 #
-# This script:
-#   - Checks for SRA Toolkit (via config/install_paths.conf)
-#   - If missing, automatically runs install.sh
-#   - Detects CPU cores and sets sensible defaults for threads
-#   - Supports parallel downloads across accessions
-#
 
 set -euo pipefail
 
@@ -52,11 +46,6 @@ Optional:
   -p, --parallel N    Number of accessions to process in parallel (default: auto)
       --keep-cache    Keep SRA cache (~/.ncbi, ~/ncbi) after download
   -h, --help          Show this help and exit
-
-Examples:
-  bash run_sra_download.sh -i SRR12345678
-  bash run_sra_download.sh -i "SRR1,SRR2" -o fastq_dir -t 8 -p 2
-  bash run_sra_download.sh -i sra_ids.txt --keep-cache
 EOF
     exit 0
 }
@@ -110,20 +99,21 @@ auto_detect_cpu() {
 }
 
 load_config_or_install() {
-    # Try to load config
+    # Try to load config if it already exists
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
     fi
 
-    # If tools not usable, run installer
-    if [[ -z "${PREFETCH_BIN:-}" || ! -x "${PREFETCH_BIN:-/nonexistent}" || -z "${FASTERQ_BIN:-}" || ! -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
+    # If binaries are not set or not executable, run installer
+    if [[ -z "${PREFETCH_BIN:-}" || ! -x "${PREFETCH_BIN:-/nonexistent}" \
+       || -z "${FASTERQ_BIN:-}"  || ! -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
         log_warning "SRA Toolkit not configured or not found."
         log_info "Running installer..."
         bash "${SCRIPT_DIR}/install.sh"
         echo ""
 
-        # Reload config after install
+        # Reload config AFTER installation
         if [[ -f "$CONFIG_FILE" ]]; then
             # shellcheck disable=SC1090
             source "$CONFIG_FILE"
@@ -133,7 +123,7 @@ load_config_or_install() {
         fi
     fi
 
-    # Final sanity check
+    # Final checks
     if [[ -z "${PREFETCH_BIN:-}" || ! -x "${PREFETCH_BIN}" ]]; then
         log_error "prefetch binary not found or not executable: ${PREFETCH_BIN:-unset}"
         exit 1
@@ -145,7 +135,6 @@ load_config_or_install() {
 }
 
 detect_threads_and_parallel() {
-    # THREADS: if not provided, auto from config or CPU
     if [[ -z "${THREADS}" ]]; then
         if [[ -n "${SRA_DEFAULT_THREADS:-}" ]]; then
             THREADS="${SRA_DEFAULT_THREADS}"
@@ -157,7 +146,6 @@ detect_threads_and_parallel() {
         fi
     fi
 
-    # PARALLEL_JOBS: if not provided, auto from CPU and THREADS
     if [[ -z "${PARALLEL_JOBS}" ]]; then
         local cores
         cores="$(auto_detect_cpu)"
