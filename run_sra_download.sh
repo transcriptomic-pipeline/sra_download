@@ -24,7 +24,8 @@ log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-CONFIG_FILE="${SCRIPT_DIR}/config/install_paths.conf"
+CONFIG_DIR="${SCRIPT_DIR}/config"
+CONFIG_FILE="${CONFIG_DIR}/install_paths.conf"
 
 INPUT_SPEC=""
 OUTPUT_DIR="sra_fastq_download"
@@ -108,31 +109,42 @@ auto_detect_cpu() {
     echo "$cores"
 }
 
-ensure_installed() {
+load_config_or_install() {
+    # Try to load config
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
-        if [[ -n "${PREFETCH_BIN:-}" && -x "$PREFETCH_BIN" && -n "${FASTERQ_BIN:-}" && -x "$FASTERQ_BIN" ]]; then
-            return 0
+    fi
+
+    # If tools not usable, run installer
+    if [[ -z "${PREFETCH_BIN:-}" || ! -x "${PREFETCH_BIN:-/nonexistent}" || -z "${FASTERQ_BIN:-}" || ! -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
+        log_warning "SRA Toolkit not configured or not found."
+        log_info "Running installer..."
+        bash "${SCRIPT_DIR}/install.sh"
+        echo ""
+
+        # Reload config after install
+        if [[ -f "$CONFIG_FILE" ]]; then
+            # shellcheck disable=SC1090
+            source "$CONFIG_FILE"
+        else
+            log_error "Installation finished but configuration file not found: $CONFIG_FILE"
+            exit 1
         fi
     fi
 
-    log_warning "SRA Toolkit not configured or not found."
-    log_info "Running installer..."
-    bash "${SCRIPT_DIR}/install.sh"
-    # Reload config
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE"
-    else
-        log_error "Installation failed: configuration file not found."
+    # Final sanity check
+    if [[ -z "${PREFETCH_BIN:-}" || ! -x "${PREFETCH_BIN}" ]]; then
+        log_error "prefetch binary not found or not executable: ${PREFETCH_BIN:-unset}"
+        exit 1
+    fi
+    if [[ -z "${FASTERQ_BIN:-}" || ! -x "${FASTERQ_BIN}" ]]; then
+        log_error "fasterq-dump binary not found or not executable: ${FASTERQ_BIN:-unset}"
         exit 1
     fi
 }
 
-load_config_and_detect_threads() {
-    ensure_installed
-
+detect_threads_and_parallel() {
     # THREADS: if not provided, auto from config or CPU
     if [[ -z "${THREADS}" ]]; then
         if [[ -n "${SRA_DEFAULT_THREADS:-}" ]]; then
@@ -140,7 +152,6 @@ load_config_and_detect_threads() {
         else
             local cores
             cores="$(auto_detect_cpu)"
-            # Use half the cores for each fasterq-dump by default (min 2)
             THREADS=$(( cores / 2 ))
             [[ "$THREADS" -lt 2 ]] && THREADS=2
         fi
@@ -150,20 +161,8 @@ load_config_and_detect_threads() {
     if [[ -z "${PARALLEL_JOBS}" ]]; then
         local cores
         cores="$(auto_detect_cpu)"
-        # Rough heuristic: use cores / threads, but at least 1
         PARALLEL_JOBS=$(( cores / THREADS ))
         [[ "$PARALLEL_JOBS" -lt 1 ]] && PARALLEL_JOBS=1
-    fi
-}
-
-check_tools() {
-    if ! command -v "$PREFETCH_BIN" &>/dev/null; then
-        log_error "prefetch not found at: $PREFETCH_BIN"
-        exit 1
-    fi
-    if ! command -v "$FASTERQ_BIN" &>/dev/null; then
-        log_error "fasterq-dump not found at: $FASTERQ_BIN"
-        exit 1
     fi
 }
 
@@ -227,7 +226,8 @@ download_one() {
 }
 
 export -f download_one
-export PREFETCH_BIN FASTERQ_BIN THREADS YELLOW NC BLUE GREEN RED log_info log_success log_warning log_error
+export PREFETCH_BIN FASTERQ_BIN THREADS YELLOW NC BLUE GREEN RED
+export -f log_info log_success log_warning log_error
 
 run_parallel_downloads() {
     local -n arr_ref="$1"
@@ -258,8 +258,8 @@ main() {
     echo "========================================"
     echo ""
 
-    load_config_and_detect_threads
-    check_tools
+    load_config_or_install
+    detect_threads_and_parallel
     parse_input_ids "$INPUT_SPEC"
     prepare_output_dir
 
