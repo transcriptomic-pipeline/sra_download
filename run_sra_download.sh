@@ -1,23 +1,20 @@
 #!/bin/bash
 #
-# SRA FASTQ Downloader (requires SRA Toolkit on PATH)
+# SRA FASTQ Downloader
 #
 
 set -euo pipefail
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()    { echo -e "${BLUE}[INFO]\033[0m $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]\033[0m $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]\033[0m $1"; }
-log_error()   { echo -e "${RED}[ERROR]\033[0m $1"; }
-
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 INPUT_SPEC=""
 OUTPUT_DIR="sra_fastq_download"
@@ -29,30 +26,24 @@ usage() {
 SRA FASTQ Downloader
 
 Usage:
-  bash download_fastq_sra.sh [OPTIONS]
+  bash download_fastq_sra.sh -i INPUT [OPTIONS]
 
 Required:
-  -i, --input VALUE   SRA IDs or file:
-                      - Single ID: SRR12345678
-                      - Comma list: "SRR1,SRR2,SRR3"
-                      - File: sra_ids.txt (comma or newline separated)
+  -i, --input VALUE   SRA IDs or file (SRR12345678, "SRR1,SRR2", or sra_ids.txt)
 
 Optional:
-  -o, --output DIR    Output directory for FASTQs (default: sra_fastq_download)
-  -t, --threads N     Threads for fasterq-dump (default: auto from CPU)
-      --bin-dir DIR   Directory containing prefetch and fasterq-dump
-                       (default: use PATH)
-  -h, --help          Show this help and exit
+  -o, --output DIR    Output directory (default: sra_fastq_download)
+  -t, --threads N     Threads for fasterq-dump (default: auto)
+      --bin-dir DIR   Toolkit bin directory (default: use PATH)
+  -h, --help          Show help
 
 Examples:
   bash download_fastq_sra.sh -i SRR12345678
-  bash download_fastq_sra.sh -i sra_ids.txt -o fastq_out
-  bash download_fastq_sra.sh -i sra_ids.txt --bin-dir /home/mac/Desktop/babul/softwares/bin
+  bash download_fastq_sra.sh -i sra_ids.txt -o my_fastq -t 16
 EOF
     exit 0
 }
 
-# ---- CLI args ----
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)
@@ -68,9 +59,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --bin-dir)
-            BIN_DIR="$2"
-            BIN_DIR="${BIN_DIR/#\~/$HOME}"
-            BIN_DIR="${BIN_DIR%/}"
+            BIN_DIR="${2%/}"
             shift 2
             ;;
         -h|--help)
@@ -83,121 +72,67 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$INPUT_SPEC" ]]; then
-    log_error "No input provided. Use -i / --input."
-    usage
-fi
+[[ -z "$INPUT_SPEC" ]] && { log_error "No input. Use -i"; usage; }
 
 auto_detect_cpu() {
-    if command -v nproc &>/dev/null; then
-        nproc
-    else
-        getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4
-    fi
+    command -v nproc &>/dev/null && nproc || echo 4
 }
 
-ensure_tools_on_path() {
-    if [[ -n "$BIN_DIR" ]]; then
-        export PATH="${BIN_DIR}:$PATH"
-    fi
+[[ -n "$BIN_DIR" ]] && export PATH="${BIN_DIR}:$PATH"
 
-    if ! command -v prefetch &>/dev/null; then
-        log_error "prefetch not found in PATH. Install SRA Toolkit or use --bin-dir."
-        exit 1
-    fi
-    if ! command -v fasterq-dump &>/dev/null; then
-        log_error "fasterq-dump not found in PATH. Install SRA Toolkit or use --bin-dir."
-        exit 1
-    fi
-}
+command -v prefetch &>/dev/null || { log_error "prefetch not found. Install SRA Toolkit first."; exit 1; }
+command -v fasterq-dump &>/dev/null || { log_error "fasterq-dump not found."; exit 1; }
 
-detect_threads() {
-    if [[ -z "${THREADS}" ]]; then
-        local cores
-        cores="$(auto_detect_cpu)"
-        THREADS=$(( cores / 2 ))
-        [[ "$THREADS" -lt 2 ]] && THREADS=2
-    fi
-}
+[[ -z "$THREADS" ]] && THREADS=$(( $(auto_detect_cpu) / 2 )) && [[ $THREADS -lt 2 ]] && THREADS=2
 
-parse_input_ids() {
-    local input="$1"
-    SRA_IDS=()
+SRA_IDS=()
+if [[ -f "$INPUT_SPEC" ]]; then
+    log_info "Reading from: $INPUT_SPEC"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//,/ }"
+        for id in $line; do
+            [[ -n "$id" ]] && SRA_IDS+=("$id")
+        done
+    done < "$INPUT_SPEC"
+else
+    log_info "Parsing input string"
+    IFS=',' read -ra TEMP_IDS <<< "$INPUT_SPEC"
+    for id in "${TEMP_IDS[@]}"; do
+        id="${id// /}"
+        [[ -n "$id" ]] && SRA_IDS+=("$id")
+    done
+fi
 
-    if [[ -f "$input" ]]; then
-        input="$(realpath "$input")"
-        log_info "Reading SRA IDs from file: $input"
-        local content
-        content="$(tr ',\r' ' \n' < "$input")"
-        while read -r line; do
-            [[ -z "$line" ]] && continue
-            SRA_IDS+=("$line")
-        done <<< "$content"
-    else
-        log_info "Parsing SRA IDs from input string"
-        local cleaned
-        cleaned="$(echo "$input" | tr -d ' ' | tr ',' '\n')"
-        while read -r id; do
-            [[ -z "$id" ]] && continue
-            SRA_IDS+=("$id")
-        done <<< "$cleaned"
-    fi
+[[ ${#SRA_IDS[@]} -eq 0 ]] && { log_error "No valid SRA IDs."; exit 1; }
 
-    if [[ "${#SRA_IDS[@]}" -eq 0 ]]; then
-        log_error "No valid SRA IDs parsed from input."
-        exit 1
-    fi
-}
+mkdir -p "$OUTPUT_DIR"
+cd "$OUTPUT_DIR"
+log_info "Output directory: $(pwd)"
 
-prepare_output_dir() {
-    mkdir -p "$OUTPUT_DIR"
-    cd "$OUTPUT_DIR"
-    log_info "Using output directory: $(pwd)"
-}
-
-download_one() {
-    local acc="$1"
-
-    echo ""
-    echo "========================================"
-    log_info "Processing accession: $acc"
-    echo "========================================"
-
-    log_info "Downloading SRA data with prefetch..."
-    echo -e "${YELLOW}[COMMAND]\033[0m prefetch \"$acc\" -O . --max-size 100G"
-    prefetch "$acc" -O . --max-size 100G
-
-    log_info "Converting to FASTQ with fasterq-dump (threads=${THREADS})..."
-    echo -e "${YELLOW}[COMMAND]\033[0m fasterq-dump \"$acc\" -O . -t . -e \"$THREADS\""
-    fasterq-dump "$acc" -O . -t . -e "$THREADS"
-
-    if [[ -d "$acc" ]]; then
-        log_info "Cleaning local SRA directory: $acc/"
-        rm -rf "$acc"
-    fi
-
-    log_success "Finished accession: $acc"
-}
-
-# ------------- MAIN -----------------
 echo "========================================"
 echo "  SRA FASTQ Downloader"
 echo "========================================"
 echo ""
-
-ensure_tools_on_path
-detect_threads
-parse_input_ids "$INPUT_SPEC"
-prepare_output_dir
-
-log_info "Threads for fasterq-dump: ${THREADS}"
+log_info "Threads: $THREADS"
 log_info "Total accessions: ${#SRA_IDS[@]}"
+echo ""
 
 for acc in "${SRA_IDS[@]}"; do
-    download_one "$acc"
+    echo "========================================"
+    log_info "Processing: $acc"
+    echo "========================================"
+    
+    log_info "Downloading..."
+    prefetch "$acc" -O . --max-size 100G
+    
+    log_info "Converting to FASTQ..."
+    fasterq-dump "$acc" -O . -t . -e "$THREADS"
+    
+    [[ -d "$acc" ]] && rm -rf "$acc"
+    
+    log_success "Finished: $acc"
+    echo ""
 done
 
-echo ""
-log_success "FASTQ download complete."
-echo ""
-ls -lh *.fastq 2>/dev/null || log_warning "No .fastq files found (check logs for errors)."
+log_success "All downloads complete!"
+ls -lh *.fastq 2>/dev/null || log_warning "No .fastq files found"
