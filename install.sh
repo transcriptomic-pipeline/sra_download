@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SRA Toolkit Installer
+# SRA Toolkit Installer (adds bin to PATH in your shell profile)
 #
 
 set -euo pipefail
@@ -12,10 +12,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+log_info()    { echo -e "${BLUE}[INFO]\033[0m $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]\033[0m $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]\033[0m $1"; }
+log_error()   { echo -e "${RED}[ERROR]\033[0m $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -38,13 +38,9 @@ Usage:
   bash install_sra.sh [OPTIONS]
 
 Options:
-  --install-dir DIR   Installation directory (default: interactive prompt)
+  --install-dir DIR   Installation directory (default: prompt)
   --threads N         Default threads for fasterq-dump (default: ${DEFAULT_THREADS})
   -h, --help          Show this help and exit
-
-After installation, add bin directory to PATH, e.g.:
-
-  export PATH="INSTALL_DIR/bin:\$PATH"
 EOF
     exit 0
 }
@@ -148,6 +144,35 @@ check_and_install_dependencies() {
     log_success "Dependency installation complete."
 }
 
+append_path_to_shell_profile() {
+    local bin_dir="$1"
+
+    # Choose profile file (simplified for your Ubuntu-like setup)
+    local profile_file=""
+    if [[ -f "${HOME}/.bashrc" ]]; then
+        profile_file="${HOME}/.bashrc"
+    elif [[ -f "${HOME}/.profile" ]]; then
+        profile_file="${HOME}/.profile"
+    else
+        profile_file="${HOME}/.bashrc"
+    fi
+
+    local export_line="export PATH=\"${bin_dir}:\$PATH\""
+
+    if grep -Fq "$export_line" "$profile_file" 2>/dev/null; then
+        log_info "PATH entry already present in ${profile_file}"
+    else
+        echo "" >> "$profile_file"
+        echo "# SRA Toolkit bin directory" >> "$profile_file"
+        echo "$export_line" >> "$profile_file"
+        log_success "Added SRA Toolkit bin to PATH in ${profile_file}"
+    fi
+
+    echo ""
+    log_info "To use SRA Toolkit in the current shell, run:"
+    echo "  ${export_line}"
+}
+
 install_sra_toolkit() {
     mkdir -p "$INSTALL_BASE_DIR"
     local BIN_DIR="${INSTALL_BASE_DIR}/bin"
@@ -194,11 +219,7 @@ EOF
 
     log_success "Configuration saved: $CONFIG_FILE"
 
-    echo ""
-    echo "Add SRA Toolkit to your PATH (for this shell):"
-    echo ""
-    echo "  export PATH=\"${BIN_DIR}:\$PATH\""
-    echo ""
+    append_path_to_shell_profile "$BIN_DIR"
 }
 
 main() {
