@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# SRA Download Module - Main Script (single entry)
+# Download FASTQ files from SRA using SRA Toolkit
 #
 
 set -euo pipefail
@@ -19,22 +19,17 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-DEFAULT_INSTALL_DIR="${HOME}/softwares"
-DEFAULT_OUTPUT_DIR="sra_fastq_download"
-
 INPUT_SPEC=""
-OUTPUT_DIR=""
+OUTPUT_DIR="sra_fastq_download"
 THREADS=""
-PARALLEL_JOBS=""
-KEEP_SRA_CACHE="no"
-INSTALL_BASE_DIR=""
+BIN_DIR=""
 
 usage() {
     cat <<EOF
-SRA Download Module - FASTQ downloader using NCBI SRA Toolkit
+SRA FASTQ Downloader
 
 Usage:
-  bash run_sra_download.sh [OPTIONS]
+  bash download_fastq_sra.sh [OPTIONS]
 
 Required:
   -i, --input VALUE   SRA IDs or file:
@@ -43,17 +38,20 @@ Required:
                       - File: sra_ids.txt (comma or newline separated)
 
 Optional:
-  -o, --output DIR    FASTQ output directory (default: prompt, then ${DEFAULT_OUTPUT_DIR})
-  -t, --threads N     Threads per fasterq-dump (default: auto from CPU)
-  -p, --parallel N    Number of accessions in parallel (default: auto from CPU)
-      --install-dir D SRA Toolkit install directory (default: prompt, then ${DEFAULT_INSTALL_DIR})
-      --keep-cache    Keep SRA cache (~/.ncbi, ~/ncbi)
+  -o, --output DIR    Output directory for FASTQs (default: sra_fastq_download)
+  -t, --threads N     Threads for fasterq-dump (default: auto from CPU)
+      --bin-dir DIR   Directory containing prefetch and fasterq-dump
+                       (default: use PATH)
   -h, --help          Show this help and exit
+
+Examples:
+  bash download_fastq_sra.sh -i SRR12345678
+  bash download_fastq_sra.sh -i sra_ids.txt -o fastq_out --bin-dir /home/user/softwares/bin
 EOF
     exit 0
 }
 
-# ------------- CLI args -------------
+# ---- CLI args ----
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)
@@ -68,19 +66,11 @@ while [[ $# -gt 0 ]]; do
             THREADS="$2"
             shift 2
             ;;
-        -p|--parallel)
-            PARALLEL_JOBS="$2"
+        --bin-dir)
+            BIN_DIR="$2"
+            BIN_DIR="${BIN_DIR/#\~/$HOME}"
+            BIN_DIR="${BIN_DIR%/}"
             shift 2
-            ;;
-        --install-dir)
-            INSTALL_BASE_DIR="$2"
-            INSTALL_BASE_DIR="${INSTALL_BASE_DIR/#\~/$HOME}"
-            INSTALL_BASE_DIR="${INSTALL_BASE_DIR%/}"
-            shift 2
-            ;;
-        --keep-cache)
-            KEEP_SRA_CACHE="yes"
-            shift
             ;;
         -h|--help)
             usage
@@ -97,7 +87,6 @@ if [[ -z "$INPUT_SPEC" ]]; then
     usage
 fi
 
-# ------------- Helpers --------------
 auto_detect_cpu() {
     if command -v nproc &>/dev/null; then
         nproc
@@ -106,107 +95,27 @@ auto_detect_cpu() {
     fi
 }
 
-prompt_install_directory() {
-    echo ""
-    echo "========================================"
-    echo "  SRA Toolkit Installation Directory"
-    echo "========================================"
-    echo ""
-    log_info "Choose installation directory for SRA Toolkit"
-    echo "  1) ${DEFAULT_INSTALL_DIR} (recommended)"
-    echo "  2) Custom directory"
-    echo ""
-    read -p "Enter choice [1-2] (default: 1): " choice
-    choice="${choice:-1}"
-
-    case "$choice" in
-        1)
-            INSTALL_BASE_DIR="${DEFAULT_INSTALL_DIR}"
-            ;;
-        2)
-            read -p "Enter custom installation directory: " INSTALL_BASE_DIR
-            INSTALL_BASE_DIR="${INSTALL_BASE_DIR/#\~/$HOME}"
-            INSTALL_BASE_DIR="${INSTALL_BASE_DIR%/}"
-            ;;
-        *)
-            log_error "Invalid choice"
-            exit 1
-            ;;
-    esac
-}
-
-prompt_output_directory() {
-    echo ""
-    echo "========================================"
-    echo "  FASTQ Output Directory"
-    echo "========================================"
-    echo ""
-    log_info "Choose output directory for FASTQ files"
-    echo "  1) ${DEFAULT_OUTPUT_DIR} (inside current directory)"
-    echo "  2) Custom directory"
-    echo ""
-    read -p "Enter choice [1-2] (default: 1): " choice
-    choice="${choice:-1}"
-
-    case "$choice" in
-        1)
-            OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
-            ;;
-        2)
-            read -p "Enter output directory: " OUTPUT_DIR
-            OUTPUT_DIR="${OUTPUT_DIR/#\~/$HOME}"
-            OUTPUT_DIR="${OUTPUT_DIR%/}"
-            ;;
-        *)
-            log_error "Invalid choice"
-            exit 1
-            ;;
-    esac
-}
-
-ensure_install_and_tools() {
-    # Ask for install dir if user didn't provide
-    if [[ -z "$INSTALL_BASE_DIR" ]]; then
-        prompt_install_directory
+ensure_tools_on_path() {
+    if [[ -n "$BIN_DIR" ]]; then
+        export PATH="${BIN_DIR}:$PATH"
     fi
 
-    local BIN_DIR="${INSTALL_BASE_DIR}/bin"
-    PREFETCH_BIN="${BIN_DIR}/prefetch"
-    FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
-
-    if [[ ! -x "$PREFETCH_BIN" || ! -x "$FASTERQ_BIN" ]]; then
-        log_warning "SRA Toolkit not found in: ${INSTALL_BASE_DIR}"
-        log_info "Running installer..."
-        bash "${SCRIPT_DIR}/install.sh" --install-dir "$INSTALL_BASE_DIR"
-        echo ""
-        BIN_DIR="${INSTALL_BASE_DIR}/bin"
-        PREFETCH_BIN="${BIN_DIR}/prefetch"
-        FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
-    else
-        log_success "Found existing SRA Toolkit in: ${INSTALL_BASE_DIR}"
-    fi
-
-    if [[ ! -x "$PREFETCH_BIN" || ! -x "$FASTERQ_BIN" ]]; then
-        log_error "SRA Toolkit binaries not found after installation at: ${BIN_DIR}"
+    if ! command -v prefetch &>/dev/null; then
+        log_error "prefetch not found in PATH. Install SRA Toolkit or use --bin-dir."
         exit 1
     fi
-
-    export PREFETCH_BIN FASTERQ_BIN
+    if ! command -v fasterq-dump &>/dev/null; then
+        log_error "fasterq-dump not found in PATH. Install SRA Toolkit or use --bin-dir."
+        exit 1
+    fi
 }
 
-detect_threads_and_parallel() {
+detect_threads() {
     if [[ -z "${THREADS}" ]]; then
         local cores
         cores="$(auto_detect_cpu)"
         THREADS=$(( cores / 2 ))
         [[ "$THREADS" -lt 2 ]] && THREADS=2
-    fi
-
-    if [[ -z "${PARALLEL_JOBS}" ]]; then
-        local cores
-        cores="$(auto_detect_cpu)"
-        PARALLEL_JOBS=$(( cores / THREADS ))
-        [[ "$PARALLEL_JOBS" -lt 1 ]] && PARALLEL_JOBS=1
     fi
 }
 
@@ -240,9 +149,6 @@ parse_input_ids() {
 }
 
 prepare_output_dir() {
-    if [[ -z "$OUTPUT_DIR" ]]; then
-        prompt_output_directory
-    fi
     mkdir -p "$OUTPUT_DIR"
     cd "$OUTPUT_DIR"
     log_info "Using output directory: $(pwd)"
@@ -257,12 +163,12 @@ download_one() {
     echo "========================================"
 
     log_info "Downloading SRA data with prefetch..."
-    echo -e "${YELLOW}[COMMAND]${NC} \"$PREFETCH_BIN\" \"$acc\" -O . --max-size 100G"
-    "$PREFETCH_BIN" "$acc" -O . --max-size 100G
+    echo -e "${YELLOW}[COMMAND]${NC} prefetch \"$acc\" -O . --max-size 100G"
+    prefetch "$acc" -O . --max-size 100G
 
     log_info "Converting to FASTQ with fasterq-dump (threads=${THREADS})..."
-    echo -e "${YELLOW}[COMMAND]${NC} \"$FASTERQ_BIN\" \"$acc\" -O . -t . -e \"$THREADS\""
-    "$FASTERQ_BIN" "$acc" -O . -t . -e "$THREADS"
+    echo -e "${YELLOW}[COMMAND]${NC} fasterq-dump \"$acc\" -O . -t . -e \"$THREADS\""
+    fasterq-dump "$acc" -O . -t . -e "$THREADS"
 
     if [[ -d "$acc" ]]; then
         log_info "Cleaning local SRA directory: $acc/"
@@ -272,55 +178,25 @@ download_one() {
     log_success "Finished accession: $acc"
 }
 
-export -f download_one
-export THREADS YELLOW NC BLUE GREEN RED
-export -f log_info log_success log_warning log_error
-export PREFETCH_BIN FASTERQ_BIN
+# ------------- MAIN -----------------
+echo "========================================"
+echo "  SRA FASTQ Downloader"
+echo "========================================"
+echo ""
 
-run_parallel_downloads() {
-    local -n arr_ref="$1"
-    local jobs="$2"
-    log_info "Starting parallel downloads: ${#arr_ref[@]} accessions, ${jobs} jobs, ${THREADS} threads each."
-    printf "%s\n" "${arr_ref[@]}" | xargs -r -n1 -P "$jobs" bash -c 'download_one "$@"' _
-}
+ensure_tools_on_path
+detect_threads
+parse_input_ids "$INPUT_SPEC"
+prepare_output_dir
 
-cleanup_cache() {
-    if [[ "$KEEP_SRA_CACHE" == "yes" ]]; then
-        log_info "Keeping SRA cache as requested."
-        return
-    fi
-    for d in "$HOME/ncbi" "$HOME/.ncbi"; do
-        if [[ -d "$d" ]]; then
-            log_info "Removing SRA cache directory: $d"
-            rm -rf "$d"
-        fi
-    done
-}
+log_info "Threads for fasterq-dump: ${THREADS}"
+log_info "Total accessions: ${#SRA_IDS[@]}"
 
-main() {
-    echo "========================================"
-    echo "  SRA Download Module"
-    echo "========================================"
-    echo ""
+for acc in "${SRA_IDS[@]}"; do
+    download_one "$acc"
+done
 
-    ensure_install_and_tools        # PROMPTS + INSTALLS if needed, then returns
-    detect_threads_and_parallel
-    parse_input_ids "$INPUT_SPEC"
-    prepare_output_dir
-
-    log_info "Installation directory: ${INSTALL_BASE_DIR}"
-    log_info "CPU cores detected:    $(auto_detect_cpu)"
-    log_info "Threads per accession: ${THREADS}"
-    log_info "Parallel accessions:   ${PARALLEL_JOBS}"
-    log_info "Total accessions:      ${#SRA_IDS[@]}"
-
-    run_parallel_downloads SRA_IDS "$PARALLEL_JOBS"
-    cleanup_cache
-
-    echo ""
-    log_success "FASTQ download complete."
-    echo ""
-    ls -lh *.fastq 2>/dev/null || log_warning "No .fastq files found (check logs for errors)."
-}
-
-main "$@"
+echo ""
+log_success "FASTQ download complete."
+echo ""
+ls -lh *.fastq 2>/dev/null || log_warning "No .fastq files found (check logs for errors)."
