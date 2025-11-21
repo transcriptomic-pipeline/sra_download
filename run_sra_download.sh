@@ -18,6 +18,9 @@ log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Defaults
+DEFAULT_INSTALL_DIR="${HOME}/softwares"
 CONFIG_DIR="${SCRIPT_DIR}/config"
 CONFIG_FILE="${CONFIG_DIR}/install_paths.conf"
 
@@ -26,6 +29,7 @@ OUTPUT_DIR="sra_fastq_download"
 THREADS=""           # threads per fasterq-dump
 PARALLEL_JOBS=""     # number of accessions in parallel
 KEEP_SRA_CACHE="no"
+INSTALL_BASE_DIR=""  # can be overridden by CLI
 
 usage() {
     cat <<EOF
@@ -44,6 +48,7 @@ Optional:
   -o, --output DIR    Output directory (default: sra_fastq_download)
   -t, --threads N     Threads per fasterq-dump process (default: auto)
   -p, --parallel N    Number of accessions to process in parallel (default: auto)
+      --install-dir D Installation directory for SRA Toolkit (default: ${DEFAULT_INSTALL_DIR})
       --keep-cache    Keep SRA cache (~/.ncbi, ~/ncbi) after download
   -h, --help          Show this help and exit
 EOF
@@ -69,6 +74,12 @@ while [[ $# -gt 0 ]]; do
             PARALLEL_JOBS="$2"
             shift 2
             ;;
+        --install-dir)
+            INSTALL_BASE_DIR="$2"
+            INSTALL_BASE_DIR="${INSTALL_BASE_DIR/#\~/$HOME}"
+            INSTALL_BASE_DIR="${INSTALL_BASE_DIR%/}"
+            shift 2
+            ;;
         --keep-cache)
             KEEP_SRA_CACHE="yes"
             shift
@@ -88,6 +99,15 @@ if [[ -z "$INPUT_SPEC" ]]; then
     usage
 fi
 
+# If user didn't specify install dir, use default
+if [[ -z "$INSTALL_BASE_DIR" ]]; then
+    INSTALL_BASE_DIR="${DEFAULT_INSTALL_DIR}"
+fi
+
+BIN_DIR="${INSTALL_BASE_DIR}/bin"
+PREFETCH_BIN="${BIN_DIR}/prefetch"
+FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
+
 auto_detect_cpu() {
     local cores
     if command -v nproc &>/dev/null; then
@@ -98,56 +118,48 @@ auto_detect_cpu() {
     echo "$cores"
 }
 
-load_config_or_install() {
-    # Attempt to load existing config
+ensure_tools_available() {
+    # 1) Try to reuse existing installation by checking filesystem
+    if [[ -x "$PREFETCH_BIN" && -x "$FASTERQ_BIN" ]]; then
+        log_success "Found existing SRA Toolkit in: ${INSTALL_BASE_DIR}"
+    else
+        log_warning "SRA Toolkit not found in: ${INSTALL_BASE_DIR}"
+        log_info "Running installer..."
+        bash "${SCRIPT_DIR}/install.sh" --install-dir "$INSTALL_BASE_DIR"
+        echo ""
+
+        # After install, recompute BIN_DIR and binaries
+        BIN_DIR="${INSTALL_BASE_DIR}/bin"
+        PREFETCH_BIN="${BIN_DIR}/prefetch"
+        FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
+    fi
+
+    # 2) Final sanity check (filesystem only)
+    if [[ ! -x "$PREFETCH_BIN" ]]; then
+        log_error "prefetch not found or not executable at: $PREFETCH_BIN"
+        exit 1
+    fi
+    if [[ ! -x "$FASTERQ_BIN" ]]; then
+        log_error "fasterq-dump not found or not executable at: $FASTERQ_BIN"
+        exit 1
+    fi
+
+    # 3) Optionally load default threads from config if present
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
-    fi
-
-    local has_tools=0
-    if [[ -n "${PREFETCH_BIN:-}" && -x "${PREFETCH_BIN:-/nonexistent}" \
-       && -n "${FASTERQ_BIN:-}"  && -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
-        has_tools=1
-    fi
-
-    if [[ "$has_tools" -eq 0 ]]; then
-        log_warning "SRA Toolkit not configured or not found."
-        log_info "Running installer..."
-        bash "${SCRIPT_DIR}/install.sh"
-        echo ""
-
-        # Reload config AFTER installation
-        if [[ -f "$CONFIG_FILE" ]]; then
-            # shellcheck disable=SC1090
-            source "$CONFIG_FILE"
-        else
-            log_error "Installation finished but configuration file not found: $CONFIG_FILE"
-            exit 1
+        if [[ -z "${THREADS}" && -n "${SRA_DEFAULT_THREADS:-}" ]]; then
+            THREADS="${SRA_DEFAULT_THREADS}"
         fi
-    fi
-
-    # Final checks
-    if [[ -z "${PREFETCH_BIN:-}" || ! -x "${PREFETCH_BIN}" ]]; then
-        log_error "prefetch binary not found or not executable: ${PREFETCH_BIN:-unset}"
-        exit 1
-    fi
-    if [[ -z "${FASTERQ_BIN:-}" || ! -x "${FASTERQ_BIN}" ]]; then
-        log_error "fasterq-dump binary not found or not executable: ${FASTERQ_BIN:-unset}"
-        exit 1
     fi
 }
 
 detect_threads_and_parallel() {
     if [[ -z "${THREADS}" ]]; then
-        if [[ -n "${SRA_DEFAULT_THREADS:-}" ]]; then
-            THREADS="${SRA_DEFAULT_THREADS}"
-        else
-            local cores
-            cores="$(auto_detect_cpu)"
-            THREADS=$(( cores / 2 ))
-            [[ "$THREADS" -lt 2 ]] && THREADS=2
-        fi
+        local cores
+        cores="$(auto_detect_cpu)"
+        THREADS=$(( cores / 2 ))
+        [[ "$THREADS" -lt 2 ]] && THREADS=2
     fi
 
     if [[ -z "${PARALLEL_JOBS}" ]]; then
@@ -250,15 +262,17 @@ main() {
     echo "========================================"
     echo ""
 
-    load_config_or_install
+    ensure_tools_available         # filesystem-based reuse / install
     detect_threads_and_parallel
     parse_input_ids "$INPUT_SPEC"
     prepare_output_dir
 
-    log_info "CPU cores detected: $(auto_detect_cpu)"
-    log_info "Threads per accession (fasterq-dump): $THREADS"
-    log_info "Parallel accessions: $PARALLEL_JOBS"
-    log_info "Total accessions: ${#SRA_IDS[@]}"
+    log_info "Installation directory: ${INSTALL_BASE_DIR}"
+    log_info "BIN directory:         ${BIN_DIR}"
+    log_info "CPU cores detected:    $(auto_detect_cpu)"
+    log_info "Threads per accession: ${THREADS}"
+    log_info "Parallel accessions:   ${PARALLEL_JOBS}"
+    log_info "Total accessions:      ${#SRA_IDS[@]}"
 
     run_parallel_downloads SRA_IDS "$PARALLEL_JOBS"
     cleanup_cache
