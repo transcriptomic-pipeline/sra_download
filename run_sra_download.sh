@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Download FASTQ files from SRA using SRA Toolkit
+# SRA FASTQ Downloader (requires SRA Toolkit on PATH)
 #
 
 set -euo pipefail
@@ -12,10 +12,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
+log_info()    { echo -e "${BLUE}[INFO]\033[0m $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]\033[0m $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]\033[0m $1"; }
+log_error()   { echo -e "${RED}[ERROR]\033[0m $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -46,7 +46,8 @@ Optional:
 
 Examples:
   bash download_fastq_sra.sh -i SRR12345678
-  bash download_fastq_sra.sh -i sra_ids.txt -o fastq_out --bin-dir /home/user/softwares/bin
+  bash download_fastq_sra.sh -i sra_ids.txt -o fastq_out
+  bash download_fastq_sra.sh -i sra_ids.txt --bin-dir /home/mac/Desktop/babul/softwares/bin
 EOF
     exit 0
 }
@@ -163,11 +164,11 @@ download_one() {
     echo "========================================"
 
     log_info "Downloading SRA data with prefetch..."
-    echo -e "${YELLOW}[COMMAND]${NC} prefetch \"$acc\" -O . --max-size 100G"
+    echo -e "${YELLOW}[COMMAND]\033[0m prefetch \"$acc\" -O . --max-size 100G"
     prefetch "$acc" -O . --max-size 100G
 
     log_info "Converting to FASTQ with fasterq-dump (threads=${THREADS})..."
-    echo -e "${YELLOW}[COMMAND]${NC} fasterq-dump \"$acc\" -O . -t . -e \"$THREADS\""
+    echo -e "${YELLOW}[COMMAND]\033[0m fasterq-dump \"$acc\" -O . -t . -e \"$THREADS\""
     fasterq-dump "$acc" -O . -t . -e "$THREADS"
 
     if [[ -d "$acc" ]]; then
