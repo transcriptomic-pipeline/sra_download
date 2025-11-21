@@ -96,19 +96,6 @@ prompt_install_directory() {
     esac
 }
 
-check_existing_install() {
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE"
-        if [[ -n "${PREFETCH_BIN:-}" && -x "${PREFETCH_BIN:-/nonexistent}" \
-           && -n "${FASTERQ_BIN:-}"  && -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
-            log_success "Existing SRA Toolkit detected at: $FASTERQ_BIN"
-            return 0
-        fi
-    fi
-    return 1
-}
-
 is_debian_like() {
     command -v apt-get &>/dev/null
 }
@@ -215,11 +202,6 @@ main() {
     echo "  SRA Download Module - Installation"
     echo "========================================"
     echo ""
-
-    if check_existing_install; then
-        log_info "Reusing existing installation."
-        return 0
-    fi
 
     check_and_install_dependencies
 
