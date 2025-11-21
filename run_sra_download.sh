@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # SRA Download Module - Main Script
+# Single entry point: chooses install dir, installs if needed, then downloads FASTQs
 #
 
 set -euo pipefail
@@ -20,15 +21,16 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 DEFAULT_INSTALL_DIR="${HOME}/softwares"
+DEFAULT_OUTPUT_DIR="sra_fastq_download"
 CONFIG_DIR="${SCRIPT_DIR}/config"
 CONFIG_FILE="${CONFIG_DIR}/install_paths.conf"
 
 INPUT_SPEC=""
-OUTPUT_DIR="sra_fastq_download"
+OUTPUT_DIR=""
 THREADS=""
 PARALLEL_JOBS=""
 KEEP_SRA_CACHE="no"
-INSTALL_BASE_DIR=""   # may be filled from config or CLI
+INSTALL_BASE_DIR=""
 
 usage() {
     cat <<EOF
@@ -44,16 +46,21 @@ Required:
                       - File: sra_ids.txt (comma or newline separated)
 
 Optional:
-  -o, --output DIR    Output directory (default: sra_fastq_download)
-  -t, --threads N     Threads per fasterq-dump process (default: auto)
-  -p, --parallel N    Number of accessions to process in parallel (default: auto)
-      --install-dir D Installation directory for SRA Toolkit (default: ask on first run)
+  -o, --output DIR    Output directory for FASTQs (default: prompt, then ${DEFAULT_OUTPUT_DIR})
+  -t, --threads N     Threads per fasterq-dump process (default: auto from CPU)
+  -p, --parallel N    Number of accessions to process in parallel (default: auto from CPU)
+      --install-dir D Installation directory for SRA Toolkit (default: prompt, then ${DEFAULT_INSTALL_DIR})
       --keep-cache    Keep SRA cache (~/.ncbi, ~/ncbi) after download
   -h, --help          Show this help and exit
+
+Examples:
+  bash run_sra_download.sh -i SRR12345678
+  bash run_sra_download.sh -i sra_ids.txt --install-dir /home/user/softwares --output /data/fastq
 EOF
     exit 0
 }
 
+# ---- CLI args ----------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)
@@ -97,6 +104,7 @@ if [[ -z "$INPUT_SPEC" ]]; then
     usage
 fi
 
+# ---- Helper functions --------------------------------------------------------
 auto_detect_cpu() {
     local cores
     if command -v nproc &>/dev/null; then
@@ -107,29 +115,76 @@ auto_detect_cpu() {
     echo "$cores"
 }
 
-ensure_tools_available() {
-    # 1) If config exists, use its INSTALL dir as default (can be overridden by CLI)
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE"
-        if [[ -z "$INSTALL_BASE_DIR" && -n "${SRA_INSTALL_DIR:-}" ]]; then
-            INSTALL_BASE_DIR="${SRA_INSTALL_DIR}"
-        fi
-    fi
+prompt_install_directory() {
+    echo ""
+    echo "========================================"
+    echo "  SRA Toolkit Installation Directory"
+    echo "========================================"
+    echo ""
+    log_info "Choose installation directory for SRA Toolkit"
+    echo "  1) ${DEFAULT_INSTALL_DIR} (recommended)"
+    echo "  2) Custom directory"
+    echo ""
+    read -p "Enter choice [1-2] (default: 1): " choice
+    choice="${choice:-1}"
 
-    # 2) If still unset, use default; installer will PROMPT for final choice
+    case "$choice" in
+        1)
+            INSTALL_BASE_DIR="${DEFAULT_INSTALL_DIR}"
+            ;;
+        2)
+            read -p "Enter custom installation directory: " INSTALL_BASE_DIR
+            INSTALL_BASE_DIR="${INSTALL_BASE_DIR/#\~/$HOME}"
+            INSTALL_BASE_DIR="${INSTALL_BASE_DIR%/}"
+            ;;
+        *)
+            log_error "Invalid choice"
+            exit 1
+            ;;
+    esac
+}
+
+prompt_output_directory() {
+    echo ""
+    echo "========================================"
+    echo "  FASTQ Output Directory"
+    echo "========================================"
+    echo ""
+    log_info "Choose output directory for FASTQ files"
+    echo "  1) ${DEFAULT_OUTPUT_DIR} (inside current directory)"
+    echo "  2) Custom directory"
+    echo ""
+    read -p "Enter choice [1-2] (default: 1): " choice
+    choice="${choice:-1}"
+
+    case "$choice" in
+        1)
+            OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
+            ;;
+        2)
+            read -p "Enter output directory: " OUTPUT_DIR
+            OUTPUT_DIR="${OUTPUT_DIR/#\~/$HOME}"
+            OUTPUT_DIR="${OUTPUT_DIR%/}"
+            ;;
+        *)
+            log_error "Invalid choice"
+            exit 1
+            ;;
+    esac
+}
+
+ensure_install_dir_and_tools() {
+    # 1) If user didn't pass --install-dir, prompt
     if [[ -z "$INSTALL_BASE_DIR" ]]; then
-        INSTALL_BASE_DIR="${DEFAULT_INSTALL_DIR}"
+        prompt_install_directory
     fi
 
     local BIN_DIR="${INSTALL_BASE_DIR}/bin"
     PREFETCH_BIN="${BIN_DIR}/prefetch"
     FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
 
-    # 3) Check filesystem for existing tools
-    if [[ -x "$PREFETCH_BIN" && -x "$FASTERQ_BIN" ]]; then
-        log_success "Found existing SRA Toolkit in: ${INSTALL_BASE_DIR}"
-    else
+    # 2) If tools missing, install into chosen dir
+    if [[ ! -x "$PREFETCH_BIN" || ! -x "$FASTERQ_BIN" ]]; then
         log_warning "SRA Toolkit not found in: ${INSTALL_BASE_DIR}"
         log_info "Running installer..."
         bash "${SCRIPT_DIR}/install.sh" --install-dir "$INSTALL_BASE_DIR"
@@ -139,19 +194,19 @@ ensure_tools_available() {
         BIN_DIR="${INSTALL_BASE_DIR}/bin"
         PREFETCH_BIN="${BIN_DIR}/prefetch"
         FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
+    else
+        log_success "Found existing SRA Toolkit in: ${INSTALL_BASE_DIR}"
     fi
 
-    # 4) Final checks
-    if [[ ! -x "$PREFETCH_BIN" ]]; then
-        log_error "prefetch not found or not executable at: $PREFETCH_BIN"
-        exit 1
-    fi
-    if [[ ! -x "$FASTERQ_BIN" ]]; then
-        log_error "fasterq-dump not found or not executable at: $FASTERQ_BIN"
+    # Final check
+    if [[ ! -x "$PREFETCH_BIN" || ! -x "$FASTERQ_BIN" ]]; then
+        log_error "SRA Toolkit binaries not found after installation at: ${BIN_DIR}"
         exit 1
     fi
 
-    # 5) Optional default threads from config
+    export PREFETCH_BIN FASTERQ_BIN
+
+    # Optional: load default threads from config if it exists
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
@@ -159,9 +214,6 @@ ensure_tools_available() {
             THREADS="${SRA_DEFAULT_THREADS}"
         fi
     fi
-
-    # Export so xargs subshells can see them
-    export PREFETCH_BIN FASTERQ_BIN
 }
 
 detect_threads_and_parallel() {
@@ -210,6 +262,10 @@ parse_input_ids() {
 }
 
 prepare_output_dir() {
+    if [[ -z "$OUTPUT_DIR" ]]; then
+        prompt_output_directory
+    fi
+
     mkdir -p "$OUTPUT_DIR"
     cd "$OUTPUT_DIR"
     log_info "Using output directory: $(pwd)"
@@ -242,13 +298,13 @@ download_one() {
 export -f download_one
 export THREADS YELLOW NC BLUE GREEN RED
 export -f log_info log_success log_warning log_error
+export PREFETCH_BIN FASTERQ_BIN
 
 run_parallel_downloads() {
     local -n arr_ref="$1"
     local jobs="$2"
 
     log_info "Starting parallel downloads: ${#arr_ref[@]} accessions, ${jobs} jobs, ${THREADS} threads each."
-
     printf "%s\n" "${arr_ref[@]}" | xargs -r -n1 -P "$jobs" bash -c 'download_one "$@"' _
 }
 
@@ -272,11 +328,11 @@ main() {
     echo "========================================"
     echo ""
 
-    ensure_tools_available
+    ensure_install_dir_and_tools     # asks for install dir, installs if needed
     detect_threads_and_parallel
     parse_input_ids "$INPUT_SPEC"
-    prepare_output_dir
-
+    prepare_output_dir               # asks for FASTQ output dir (if not CLI)
+    
     log_info "Installation directory: ${INSTALL_BASE_DIR}"
     log_info "CPU cores detected:    $(auto_detect_cpu)"
     log_info "Threads per accession: ${THREADS}"
