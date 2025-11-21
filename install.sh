@@ -1,7 +1,6 @@
 #!/bin/bash
 #
 # SRA Download Module - Installation Script
-# (Usually called automatically from run_sra_download.sh)
 #
 
 set -euo pipefail
@@ -20,14 +19,12 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Defaults
 DEFAULT_INSTALL_DIR="${HOME}/softwares"
 DEFAULT_THREADS=4
 
 INSTALL_BASE_DIR=""
 THREADS="$DEFAULT_THREADS"
 
-# SRA Toolkit URL (Ubuntu 64-bit)
 SRA_URL="https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-ubuntu64.tar.gz"
 
 CONFIG_DIR="${SCRIPT_DIR}/config"
@@ -36,9 +33,6 @@ CONFIG_FILE="${CONFIG_DIR}/install_paths.conf"
 usage() {
     cat <<EOF
 SRA Download Module - Installation
-
-Usually you don't call this directly; run_sra_download.sh will call it
-if SRA Toolkit is missing.
 
 Usage:
   bash install.sh [OPTIONS]
@@ -51,7 +45,6 @@ EOF
     exit 0
 }
 
-# Parse CLI args
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --install-dir)
@@ -107,8 +100,9 @@ check_existing_install() {
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
-        if [[ -n "${PREFETCH_BIN:-}" && -x "$PREFETCH_BIN" && -n "${FASTERQ_BIN:-}" && -x "$FASTERQ_BIN" ]]; then
-            log_success "Existing SRA Toolkit detected: $FASTERQ_BIN"
+        if [[ -n "${PREFETCH_BIN:-}" && -x "${PREFETCH_BIN:-/nonexistent}" \
+           && -n "${FASTERQ_BIN:-}"  && -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
+            log_success "Existing SRA Toolkit detected at: $FASTERQ_BIN"
             return 0
         fi
     fi
@@ -116,10 +110,7 @@ check_existing_install() {
 }
 
 is_debian_like() {
-    if command -v apt-get &>/dev/null; then
-        return 0
-    fi
-    return 1
+    command -v apt-get &>/dev/null
 }
 
 install_package_if_missing_apt() {
@@ -141,23 +132,12 @@ check_and_install_dependencies() {
 
     local need_apt=0
 
-    # curl
-    if ! command -v curl &>/dev/null; then
-        log_warning "curl not found."
-        need_apt=1
-    fi
-
-    # tar
-    if ! command -v tar &>/dev/null; then
-        log_warning "tar not found."
-        need_apt=1
-    fi
-
-    # basic tools (optional, but nice)
-    if ! command -v gzip &>/dev/null; then
-        log_warning "gzip not found."
-        need_apt=1
-    fi
+    for tool in curl tar gzip; do
+        if ! command -v "$tool" &>/dev/null; then
+            log_warning "$tool not found."
+            need_apt=1
+        fi
+    done
 
     if [[ "$need_apt" -eq 0 ]]; then
         log_success "All required dependencies already installed."
@@ -165,23 +145,15 @@ check_and_install_dependencies() {
     fi
 
     if ! is_debian_like; then
-        log_error "Missing dependencies (curl/tar/gzip) and this installer only knows how to use apt-get."
-        log_error "Please install the missing tools manually and re-run install.sh."
+        log_error "Missing dependencies (curl/tar/gzip) and automatic install only supports apt-get."
+        log_error "Please install missing tools manually and re-run install.sh."
         exit 1
     fi
 
     log_info "Installing missing dependencies via apt-get..."
-    # Install individually so dpkg -s checks are respected
-    if ! command -v curl &>/dev/null; then
-        install_package_if_missing_apt "curl"
-    fi
-    if ! command -v tar &>/dev/null; then
-        install_package_if_missing_apt "tar"
-    fi
-    if ! command -v gzip &>/dev/null; then
-        install_package_if_missing_apt "gzip"
-    fi
-
+    command -v curl &>/dev/null || install_package_if_missing_apt curl
+    command -v tar  &>/dev/null || install_package_if_missing_apt tar
+    command -v gzip &>/dev/null || install_package_if_missing_apt gzip
     log_success "Dependency installation complete."
 }
 
@@ -245,7 +217,7 @@ main() {
     echo ""
 
     if check_existing_install; then
-        log_info "Using existing installation."
+        log_info "Reusing existing installation."
         return 0
     fi
 
