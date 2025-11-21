@@ -19,17 +19,16 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Defaults
 DEFAULT_INSTALL_DIR="${HOME}/softwares"
 CONFIG_DIR="${SCRIPT_DIR}/config"
 CONFIG_FILE="${CONFIG_DIR}/install_paths.conf"
 
 INPUT_SPEC=""
 OUTPUT_DIR="sra_fastq_download"
-THREADS=""           # threads per fasterq-dump
-PARALLEL_JOBS=""     # number of accessions in parallel
+THREADS=""
+PARALLEL_JOBS=""
 KEEP_SRA_CACHE="no"
-INSTALL_BASE_DIR=""  # can be overridden by CLI
+INSTALL_BASE_DIR=""   # may be filled from config or CLI
 
 usage() {
     cat <<EOF
@@ -48,14 +47,13 @@ Optional:
   -o, --output DIR    Output directory (default: sra_fastq_download)
   -t, --threads N     Threads per fasterq-dump process (default: auto)
   -p, --parallel N    Number of accessions to process in parallel (default: auto)
-      --install-dir D Installation directory for SRA Toolkit (default: ${DEFAULT_INSTALL_DIR})
+      --install-dir D Installation directory for SRA Toolkit (default: ask on first run)
       --keep-cache    Keep SRA cache (~/.ncbi, ~/ncbi) after download
   -h, --help          Show this help and exit
 EOF
     exit 0
 }
 
-# Parse CLI args
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)
@@ -99,15 +97,6 @@ if [[ -z "$INPUT_SPEC" ]]; then
     usage
 fi
 
-# If user didn't specify install dir, use default
-if [[ -z "$INSTALL_BASE_DIR" ]]; then
-    INSTALL_BASE_DIR="${DEFAULT_INSTALL_DIR}"
-fi
-
-BIN_DIR="${INSTALL_BASE_DIR}/bin"
-PREFETCH_BIN="${BIN_DIR}/prefetch"
-FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
-
 auto_detect_cpu() {
     local cores
     if command -v nproc &>/dev/null; then
@@ -119,7 +108,25 @@ auto_detect_cpu() {
 }
 
 ensure_tools_available() {
-    # 1) Try to reuse existing installation by checking filesystem
+    # 1) If config exists, use its INSTALL dir as default (can be overridden by CLI)
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE"
+        if [[ -z "$INSTALL_BASE_DIR" && -n "${SRA_INSTALL_DIR:-}" ]]; then
+            INSTALL_BASE_DIR="${SRA_INSTALL_DIR}"
+        fi
+    fi
+
+    # 2) If still unset, use default; installer will PROMPT for final choice
+    if [[ -z "$INSTALL_BASE_DIR" ]]; then
+        INSTALL_BASE_DIR="${DEFAULT_INSTALL_DIR}"
+    fi
+
+    local BIN_DIR="${INSTALL_BASE_DIR}/bin"
+    PREFETCH_BIN="${BIN_DIR}/prefetch"
+    FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
+
+    # 3) Check filesystem for existing tools
     if [[ -x "$PREFETCH_BIN" && -x "$FASTERQ_BIN" ]]; then
         log_success "Found existing SRA Toolkit in: ${INSTALL_BASE_DIR}"
     else
@@ -128,13 +135,13 @@ ensure_tools_available() {
         bash "${SCRIPT_DIR}/install.sh" --install-dir "$INSTALL_BASE_DIR"
         echo ""
 
-        # After install, recompute BIN_DIR and binaries
+        # Recompute paths after install
         BIN_DIR="${INSTALL_BASE_DIR}/bin"
         PREFETCH_BIN="${BIN_DIR}/prefetch"
         FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
     fi
 
-    # 2) Final sanity check (filesystem only)
+    # 4) Final checks
     if [[ ! -x "$PREFETCH_BIN" ]]; then
         log_error "prefetch not found or not executable at: $PREFETCH_BIN"
         exit 1
@@ -144,7 +151,7 @@ ensure_tools_available() {
         exit 1
     fi
 
-    # 3) Optionally load default threads from config if present
+    # 5) Optional default threads from config
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
@@ -152,6 +159,9 @@ ensure_tools_available() {
             THREADS="${SRA_DEFAULT_THREADS}"
         fi
     fi
+
+    # Export so xargs subshells can see them
+    export PREFETCH_BIN FASTERQ_BIN
 }
 
 detect_threads_and_parallel() {
@@ -230,7 +240,7 @@ download_one() {
 }
 
 export -f download_one
-export PREFETCH_BIN FASTERQ_BIN THREADS YELLOW NC BLUE GREEN RED
+export THREADS YELLOW NC BLUE GREEN RED
 export -f log_info log_success log_warning log_error
 
 run_parallel_downloads() {
@@ -262,13 +272,12 @@ main() {
     echo "========================================"
     echo ""
 
-    ensure_tools_available         # filesystem-based reuse / install
+    ensure_tools_available
     detect_threads_and_parallel
     parse_input_ids "$INPUT_SPEC"
     prepare_output_dir
 
     log_info "Installation directory: ${INSTALL_BASE_DIR}"
-    log_info "BIN directory:         ${BIN_DIR}"
     log_info "CPU cores detected:    $(auto_detect_cpu)"
     log_info "Threads per accession: ${THREADS}"
     log_info "Parallel accessions:   ${PARALLEL_JOBS}"
