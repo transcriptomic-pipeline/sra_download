@@ -99,15 +99,19 @@ auto_detect_cpu() {
 }
 
 load_config_or_install() {
-    # Try to load config if it already exists
+    # Attempt to load existing config
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
     fi
 
-    # If binaries are not set or not executable, run installer
-    if [[ -z "${PREFETCH_BIN:-}" || ! -x "${PREFETCH_BIN:-/nonexistent}" \
-       || -z "${FASTERQ_BIN:-}"  || ! -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
+    local has_tools=0
+    if [[ -n "${PREFETCH_BIN:-}" && -x "${PREFETCH_BIN:-/nonexistent}" \
+       && -n "${FASTERQ_BIN:-}"  && -x "${FASTERQ_BIN:-/nonexistent}" ]]; then
+        has_tools=1
+    fi
+
+    if [[ "$has_tools" -eq 0 ]]; then
         log_warning "SRA Toolkit not configured or not found."
         log_info "Running installer..."
         bash "${SCRIPT_DIR}/install.sh"
