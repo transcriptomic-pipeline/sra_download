@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # SRA Download Module - Installation Script
+# Called by run_sra_download.sh with --install-dir already chosen
 #
 
 set -euo pipefail
@@ -19,9 +20,7 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-DEFAULT_INSTALL_DIR="${HOME}/softwares"
 DEFAULT_THREADS=4
-
 INSTALL_BASE_DIR=""
 THREADS="$DEFAULT_THREADS"
 
@@ -35,16 +34,14 @@ usage() {
 SRA Download Module - Installation
 
 Usage:
-  bash install.sh [OPTIONS]
+  bash install.sh --install-dir DIR [--threads N]
 
-Options:
-  --install-dir DIR   Installation directory (default: ask interactively)
-  --threads N         Default threads for fasterq-dump (default: ${DEFAULT_THREADS})
-  -h, --help          Show this help and exit
+This script is normally called automatically by run_sra_download.sh.
 EOF
     exit 0
 }
 
+# ---- Parse args (INSTALL_BASE_DIR is REQUIRED here) --------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --install-dir)
@@ -67,34 +64,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-prompt_install_directory() {
-    echo ""
-    echo "========================================"
-    echo "  Installation Directory"
-    echo "========================================"
-    echo ""
-    log_info "Choose installation directory for SRA Toolkit"
-    echo "  1) ${DEFAULT_INSTALL_DIR} (recommended)"
-    echo "  2) Custom directory"
-    echo ""
-    read -p "Enter choice [1-2] (default: 1): " choice
-    choice="${choice:-1}"
-
-    case "$choice" in
-        1)
-            INSTALL_BASE_DIR="${DEFAULT_INSTALL_DIR}"
-            ;;
-        2)
-            read -p "Enter custom directory: " INSTALL_BASE_DIR
-            INSTALL_BASE_DIR="${INSTALL_BASE_DIR/#\~/$HOME}"
-            INSTALL_BASE_DIR="${INSTALL_BASE_DIR%/}"
-            ;;
-        *)
-            log_error "Invalid choice"
-            exit 1
-            ;;
-    esac
-}
+if [[ -z "$INSTALL_BASE_DIR" ]]; then
+    log_error "--install-dir is required for install.sh"
+    usage
+fi
 
 is_debian_like() {
     command -v apt-get &>/dev/null
@@ -133,7 +106,7 @@ check_and_install_dependencies() {
 
     if ! is_debian_like; then
         log_error "Missing dependencies (curl/tar/gzip) and automatic install only supports apt-get."
-        log_error "Please install missing tools manually and re-run install.sh."
+        log_error "Please install missing tools manually and re-run."
         exit 1
     fi
 
@@ -149,8 +122,8 @@ install_sra_toolkit() {
     local BIN_DIR="${INSTALL_BASE_DIR}/bin"
     mkdir -p "$BIN_DIR"
 
-    log_info "Downloading SRA Toolkit from:"
-    log_info "  $SRA_URL"
+    log_info "Downloading SRA Toolkit into: $INSTALL_BASE_DIR"
+    log_info "  URL: $SRA_URL"
     local TMP_TAR
     TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/sratoolkit.XXXXXX.tar.gz")"
 
@@ -191,7 +164,7 @@ EOF
     log_success "Configuration saved: $CONFIG_FILE"
 
     echo ""
-    echo "To use SRA Toolkit from any terminal, add this to your shell config:"
+    echo "To use SRA Toolkit from any terminal, you can add:"
     echo ""
     echo "  export PATH=\"${BIN_DIR}:\$PATH\""
     echo ""
@@ -204,14 +177,6 @@ main() {
     echo ""
 
     check_and_install_dependencies
-
-    # If caller did not pass --install-dir, ask interactively
-    if [[ -z "$INSTALL_BASE_DIR" ]]; then
-        prompt_install_directory
-    else
-        log_info "Using installation directory from CLI: $INSTALL_BASE_DIR"
-    fi
-
     install_sra_toolkit
 
     echo ""
