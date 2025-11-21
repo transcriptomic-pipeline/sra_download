@@ -115,6 +115,76 @@ check_existing_install() {
     return 1
 }
 
+is_debian_like() {
+    if command -v apt-get &>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+install_package_if_missing_apt() {
+    local pkg="$1"
+    if dpkg -s "$pkg" &>/dev/null; then
+        return 0
+    fi
+    log_warning "Package '$pkg' not found. Installing via apt-get (requires sudo)..."
+    sudo apt-get update -y
+    sudo apt-get install -y "$pkg"
+}
+
+check_and_install_dependencies() {
+    echo ""
+    echo "========================================"
+    echo "  Checking Dependencies"
+    echo "========================================"
+    echo ""
+
+    local need_apt=0
+
+    # curl
+    if ! command -v curl &>/dev/null; then
+        log_warning "curl not found."
+        need_apt=1
+    fi
+
+    # tar
+    if ! command -v tar &>/dev/null; then
+        log_warning "tar not found."
+        need_apt=1
+    fi
+
+    # basic tools (optional, but nice)
+    if ! command -v gzip &>/dev/null; then
+        log_warning "gzip not found."
+        need_apt=1
+    fi
+
+    if [[ "$need_apt" -eq 0 ]]; then
+        log_success "All required dependencies already installed."
+        return 0
+    fi
+
+    if ! is_debian_like; then
+        log_error "Missing dependencies (curl/tar/gzip) and this installer only knows how to use apt-get."
+        log_error "Please install the missing tools manually and re-run install.sh."
+        exit 1
+    fi
+
+    log_info "Installing missing dependencies via apt-get..."
+    # Install individually so dpkg -s checks are respected
+    if ! command -v curl &>/dev/null; then
+        install_package_if_missing_apt "curl"
+    fi
+    if ! command -v tar &>/dev/null; then
+        install_package_if_missing_apt "tar"
+    fi
+    if ! command -v gzip &>/dev/null; then
+        install_package_if_missing_apt "gzip"
+    fi
+
+    log_success "Dependency installation complete."
+}
+
 install_sra_toolkit() {
     mkdir -p "$INSTALL_BASE_DIR"
     local BIN_DIR="${INSTALL_BASE_DIR}/bin"
@@ -178,6 +248,8 @@ main() {
         log_info "Using existing installation."
         return 0
     fi
+
+    check_and_install_dependencies
 
     if [[ -z "$INSTALL_BASE_DIR" ]]; then
         prompt_install_directory
