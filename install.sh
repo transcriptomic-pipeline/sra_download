@@ -38,7 +38,7 @@ Usage:
   bash install.sh [OPTIONS]
 
 Options:
-  --install-dir DIR   Installation directory (default: ${DEFAULT_INSTALL_DIR})
+  --install-dir DIR   Installation directory (default: ask interactively)
   --threads N         Default threads for fasterq-dump (default: ${DEFAULT_THREADS})
   -h, --help          Show this help and exit
 EOF
@@ -205,6 +205,7 @@ main() {
 
     check_and_install_dependencies
 
+    # If caller did not pass --install-dir, ask interactively
     if [[ -z "$INSTALL_BASE_DIR" ]]; then
         prompt_install_directory
     else
