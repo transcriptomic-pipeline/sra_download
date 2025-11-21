@@ -1,7 +1,6 @@
 #!/bin/bash
 #
 # SRA Download Module - Main Script
-# Single entry point: chooses install dir, installs if needed, then downloads FASTQs
 #
 
 set -euo pipefail
@@ -46,21 +45,17 @@ Required:
                       - File: sra_ids.txt (comma or newline separated)
 
 Optional:
-  -o, --output DIR    Output directory for FASTQs (default: prompt, then ${DEFAULT_OUTPUT_DIR})
-  -t, --threads N     Threads per fasterq-dump process (default: auto from CPU)
-  -p, --parallel N    Number of accessions to process in parallel (default: auto from CPU)
-      --install-dir D Installation directory for SRA Toolkit (default: prompt, then ${DEFAULT_INSTALL_DIR})
-      --keep-cache    Keep SRA cache (~/.ncbi, ~/ncbi) after download
+  -o, --output DIR    FASTQ output directory (default: prompt, then ${DEFAULT_OUTPUT_DIR})
+  -t, --threads N     Threads per fasterq-dump (default: auto from CPU)
+  -p, --parallel N    Number of accessions in parallel (default: auto from CPU)
+      --install-dir D SRA Toolkit install directory (default: prompt, then ${DEFAULT_INSTALL_DIR})
+      --keep-cache    Keep SRA cache (~/.ncbi, ~/ncbi)
   -h, --help          Show this help and exit
-
-Examples:
-  bash run_sra_download.sh -i SRR12345678
-  bash run_sra_download.sh -i sra_ids.txt --install-dir /home/user/softwares --output /data/fastq
 EOF
     exit 0
 }
 
-# ---- CLI args ----------------------------------------------------------------
+# ----------------- CLI args -----------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)
@@ -104,15 +99,13 @@ if [[ -z "$INPUT_SPEC" ]]; then
     usage
 fi
 
-# ---- Helper functions --------------------------------------------------------
+# ----------------- Helpers ------------------
 auto_detect_cpu() {
-    local cores
     if command -v nproc &>/dev/null; then
-        cores="$(nproc)"
+        nproc
     else
-        cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+        getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4
     fi
-    echo "$cores"
 }
 
 prompt_install_directory() {
@@ -174,7 +167,16 @@ prompt_output_directory() {
 }
 
 ensure_install_dir_and_tools() {
-    # 1) If user didn't pass --install-dir, prompt
+    # Use config as default if present and user did not pass --install-dir
+    if [[ -z "$INSTALL_BASE_DIR" && -f "$CONFIG_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$CONFIG_FILE"
+        if [[ -n "${SRA_INSTALL_DIR:-}" ]]; then
+            INSTALL_BASE_DIR="${SRA_INSTALL_DIR}"
+        fi
+    fi
+
+    # Prompt if still unset
     if [[ -z "$INSTALL_BASE_DIR" ]]; then
         prompt_install_directory
     fi
@@ -183,14 +185,12 @@ ensure_install_dir_and_tools() {
     PREFETCH_BIN="${BIN_DIR}/prefetch"
     FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
 
-    # 2) If tools missing, install into chosen dir
     if [[ ! -x "$PREFETCH_BIN" || ! -x "$FASTERQ_BIN" ]]; then
         log_warning "SRA Toolkit not found in: ${INSTALL_BASE_DIR}"
         log_info "Running installer..."
         bash "${SCRIPT_DIR}/install.sh" --install-dir "$INSTALL_BASE_DIR"
         echo ""
 
-        # Recompute paths after install
         BIN_DIR="${INSTALL_BASE_DIR}/bin"
         PREFETCH_BIN="${BIN_DIR}/prefetch"
         FASTERQ_BIN="${BIN_DIR}/fasterq-dump"
@@ -198,15 +198,12 @@ ensure_install_dir_and_tools() {
         log_success "Found existing SRA Toolkit in: ${INSTALL_BASE_DIR}"
     fi
 
-    # Final check
     if [[ ! -x "$PREFETCH_BIN" || ! -x "$FASTERQ_BIN" ]]; then
         log_error "SRA Toolkit binaries not found after installation at: ${BIN_DIR}"
         exit 1
     fi
 
-    export PREFETCH_BIN FASTERQ_BIN
-
-    # Optional: load default threads from config if it exists
+    # Optionally load default threads from config
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
@@ -214,6 +211,8 @@ ensure_install_dir_and_tools() {
             THREADS="${SRA_DEFAULT_THREADS}"
         fi
     fi
+
+    export PREFETCH_BIN FASTERQ_BIN
 }
 
 detect_threads_and_parallel() {
@@ -328,11 +327,11 @@ main() {
     echo "========================================"
     echo ""
 
-    ensure_install_dir_and_tools     # asks for install dir, installs if needed
+    ensure_install_dir_and_tools        # prompts + installs if needed
     detect_threads_and_parallel
     parse_input_ids "$INPUT_SPEC"
-    prepare_output_dir               # asks for FASTQ output dir (if not CLI)
-    
+    prepare_output_dir                  # prompts for FASTQ output dir if not set
+
     log_info "Installation directory: ${INSTALL_BASE_DIR}"
     log_info "CPU cores detected:    $(auto_detect_cpu)"
     log_info "Threads per accession: ${THREADS}"
