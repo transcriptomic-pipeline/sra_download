@@ -188,7 +188,7 @@ download_one() {
     prefetch "$acc" -O . --max-size 100G
     
     log_info "Converting to FASTQ (threads=${threads})..."
-    fasterq-dump "$acc" -O . -t . -e "$threads"
+    fasterq-dump "$acc" -O . -t . -e "$threads" --split-files
     
     [[ -d "$acc" ]] && rm -rf "$acc"
     
